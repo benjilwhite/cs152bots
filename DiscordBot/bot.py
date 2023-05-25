@@ -8,6 +8,7 @@ import re
 import requests
 from report import Report
 import pdb
+from moderator import Moderator
 
 # Set up logging to the console
 logger = logging.getLogger('discord')
@@ -27,13 +28,15 @@ with open(token_path) as f:
 
 
 class ModBot(discord.Client):
-    def __init__(self): 
+    def __init__(self, moderator: Moderator): 
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix='.', intents=intents)
         self.group_num = None
         self.mod_channels = {} # Map from guild to the mod channel id for that guild
         self.reports = {} # Map from user IDs to the state of their report
+        self.moderator = moderator
+        self.handle = False
 
     async def on_ready(self):
         print(f'{self.user.name} has connected to Discord! It is these guilds:')
@@ -81,6 +84,15 @@ class ModBot(discord.Client):
         author_id = message.author.id
         responses = []
 
+        if message.content.startswith('handle') or self.handle:
+            self.handle = True
+            res = await self.moderator.handle_report(message, self)
+            for r in res:
+                await message.channel.send(r)
+            if await self.moderator.report_complete():
+                self.handle = False
+                await self.moderator.reset()
+
         # Only respond to messages if they're part of a reporting flow
         if author_id not in self.reports and not message.content.startswith(Report.START_KEYWORD):
             return
@@ -93,10 +105,13 @@ class ModBot(discord.Client):
         responses = await self.reports[author_id].handle_message(message)
         for r in responses:
             await message.channel.send(r)
+            # print(r)
 
         # If the report is complete or cancelled, remove it from our map
         if self.reports[author_id].report_complete():
             self.reports.pop(author_id)
+        
+        
 
     async def handle_channel_message(self, message):
         # Only handle messages sent in the "group-#" channel
@@ -127,5 +142,6 @@ class ModBot(discord.Client):
         return "Evaluated: '" + text+ "'"
 
 
-client = ModBot()
+moderator = Moderator()
+client = ModBot(moderator)
 client.run(discord_token)
