@@ -1,128 +1,131 @@
-from enum import Enum, auto
+# bot.py
 import discord
+from discord.ext import commands
+import os
+import json
+import logging
 import re
+import requests
+from report import Report
+import pdb
 
-class State(Enum):
-    REPORT_START = auto()
-    AWAITING_MESSAGE = auto()
-    MESSAGE_IDENTIFIED = auto()
-    REPORT_COMPLETE = auto()
+# Set up logging to the console
+logger = logging.getLogger('discord')
+logger.setLevel(logging.DEBUG)
+handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+logger.addHandler(handler)
 
-class Reason(Enum):
-    SPAM = auto()
-    HARASSMENT = auto()
-    DOXING = auto()
-    REPORT_OTHER = auto()
-    UNKNOWN = auto()
+# There should be a file called 'tokens.json' inside the same folder as this file
+token_path = 'tokens.json'
+if not os.path.isfile(token_path):
+    raise Exception(f"{token_path} not found!")
+with open(token_path) as f:
+    # If you get an error here, it means your token is formatted incorrectly. Did you put it in quotes?
+    tokens = json.load(f)
+    discord_token = tokens['discord']
 
-class DoxingSubReason(Enum):
-    SENSITIVE_INFO = auto()
-    THREATENING_LEAK = auto()
-    EXPOSING_INFO = auto()
-    UNKNOWN = auto()
 
-class Report:
-    START_KEYWORD = "report"
-    CANCEL_KEYWORD = "cancel"
-    HELP_KEYWORD = "help"
+class ModBot(discord.Client):
+    def __init__(self): 
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix='.', intents=intents)
+        self.group_num = None
+        self.mod_channels = {} # Map from guild to the mod channel id for that guild
+        self.reports = {} # Map from user IDs to the state of their report
 
-    def __init__(self, client):
-        self.state = State.REPORT_START
-        self.client = client
-        self.message = None
-        self.reason = Reason.UNKNOWN
-        self.doxing_subreason = DoxingSubReason.UNKNOWN
-        self.imminent_danger = False
+    async def on_ready(self):
+        print(f'{self.user.name} has connected to Discord! It is these guilds:')
+        for guild in self.guilds:
+            print(f' - {guild.name}')
+        print('Press Ctrl-C to quit.')
+
+        # Parse the group number out of the bot's name
+        match = re.search('[gG]roup (\d+) [bB]ot', self.user.name)
+        if match:
+            self.group_num = match.group(1)
+        else:
+            raise Exception("Group number not found in bot's name. Name format should be \"Group # Bot\".")
+
+        # Find the mod channel in each guild that this bot should report to
+        for guild in self.guilds:
+            for channel in guild.text_channels:
+                if channel.name == f'group-{self.group_num}-mod':
+                    self.mod_channels[guild.id] = channel
         
-    async def handle_message(self, message):
+
+    async def on_message(self, message):
         '''
-        This function makes up the meat of the user-side reporting flow. It defines how we transition between states and what 
-        prompts to offer at each of those states. You're welcome to change anything you want; this skeleton is just here to
-        get you started and give you a model for working with Discord. 
+        This function is called whenever a message is sent in a channel that the bot can see (including DMs). 
+        Currently the bot is configured to only handle messages that are sent over DMs or in your group's "group-#" channel. 
         '''
+        # Ignore messages from the bot 
+        if message.author.id == self.user.id:
+            return
 
-        if message.content == self.CANCEL_KEYWORD:
-            self.state = State.REPORT_COMPLETE
-            return ["Report cancelled."]
-        
-        if self.state == State.REPORT_START:
-            reply =  "Thank you for starting the reporting process. "
-            reply += "Say `help` at any time for more information.\n\n"
-            reply += "Please copy paste the link to the message you want to report.\n"
-            reply += "You can obtain this link by right-clicking the message and clicking `Copy Message Link`."
-            self.state = State.AWAITING_MESSAGE
-            return [reply]
-        
-        if self.state == State.AWAITING_MESSAGE:
-            # Parse out the three ID strings from the message link
-            m = re.search('/(\d+)/(\d+)/(\d+)', message.content)
-            if not m:
-                return ["I'm sorry, I couldn't read that link. Please try again or say `cancel` to cancel."]
-            guild = self.client.get_guild(int(m.group(1)))
-            if not guild:
-                return ["I cannot accept reports of messages from guilds that I'm not in. Please have the guild owner add me to the guild and try again."]
-            channel = guild.get_channel(int(m.group(2)))
-            if not channel:
-                return ["It seems this channel was deleted or never existed. Please try again or say `cancel` to cancel."]
-            try:
-                message = await channel.fetch_message(int(m.group(3)))
-            except discord.errors.NotFound:
-                return ["It seems this message was deleted or never existed. Please try again or say `cancel` to cancel."]
+        # Check if this message was sent in a server ("guild") or if it's a DM
+        if message.guild:
+            await self.handle_channel_message(message)
+        else:
+            await self.handle_dm(message)
 
-            # Here we've found the message - it's up to you to decide what to do next!
-            self.state = State.MESSAGE_IDENTIFIED
-            return ["I found this message:", "```" + message.author.name + ": " + message.content + "```", \
-                    "This is all I know how to do right now - it's up to you to build out the rest of my reporting flow!"]
-        
-        if self.state == State.MESSAGE_IDENTIFIED:
-            if self.reason == Reason.UNKNOWN:
-                return ["What is your reason for reporting? You can say `spam`, `harassment`, `doxing`, or `reporting on behalf of someone else`."]
-            
-            if self.reason == Reason.SPAM or self.reason == Reason.HARASSMENT or self.reason == Reason.REPORT_OTHER:
-                self.state = State.REPORT_COMPLETE
-                return ["Thank you for the report. Our moderation team will take appropriate action. Would you like to block the user? You can say `yes` or `no`."]
-            
-            if self.reason == Reason.DOXING and self.doxing_subreason == DoxingSubReason.UNKNOWN:
-                return ["Please specify. You can say `sensitive information about me`, `threatening to leak my information`, or `exposing my information`."]
-            
-            if self.reason == Reason.DOXING and self.doxing_subreason != DoxingSubReason.UNKNOWN:
-                if self.imminent_danger == None:
-                    return ["Does the information present an imminent physical danger to you? You can say `yes` or `no`."]
-                else:
-                    self.state = State.REPORT_COMPLETE
-                    if self.imminent_danger:
-                        return ["Your report has been received. Our moderation team will investigate the situation and resolve the situation as soon as possible. In the meantime, would you like to block the user? You can say `yes` or `no`."]
-                    else:
-                        return ["Thank you for the report. Our moderation team will take appropriate action. Would you like to block the user? You can say `yes` or `no`."]
-        
-        if self.state == State.MESSAGE_IDENTIFIED and self.reason == Reason.UNKNOWN:
-            if message.content.lower() == "spam":
-                self.reason = Reason.SPAM
-            elif message.content.lower() == "harassment":
-                self.reason = Reason.HARASSMENT
-            elif message.content.lower() == "doxing":
-                self.reason = Reason.DOXING
-            elif message.content.lower() == "reporting on behalf of someone else":
-                self.reason = Reason.REPORT_OTHER
-        
-        # Detect doxing subreason
-        if self.state == State.MESSAGE_IDENTIFIED and self.reason == Reason.DOXING and self.doxing_subreason == DoxingSubReason.UNKNOWN:
-            if message.content.lower() == "sensitive information about me":
-                self.doxing_subreason = DoxingSubReason.SENSITIVE_INFO
-            elif message.content.lower() == "threatening to leak my information":
-                self.doxing_subreason = DoxingSubReason.THREATENING_LEAK
-            elif message.content.lower() == "exposing my information":
-                self.doxing_subreason = DoxingSubReason.EXPOSING_INFO
-        
-        # Detect imminent danger
-        if self.state == State.MESSAGE_IDENTIFIED and self.reason == Reason.DOXING and self.doxing_subreason != DoxingSubReason.UNKNOWN and self.imminent_danger == None:
-            if message.content.lower() == "yes":
-                self.imminent_danger = True
-            elif message.content.lower() == "no":
-                self.imminent_danger = False
+    async def handle_dm(self, message):
+        # Handle a help message
+        if message.content == Report.HELP_KEYWORD:
+            reply =  "Use the `report` command to begin the reporting process.\n"
+            reply += "Use the `cancel` command to cancel the report process.\n"
+            await message.channel.send(reply)
+            return
 
-        return []
+        author_id = message.author.id
+        responses = []
 
-    def report_complete(self):
-        return self.state == State.REPORT_COMPLETE
+        # Only respond to messages if they're part of a reporting flow
+        if author_id not in self.reports and not message.content.startswith(Report.START_KEYWORD):
+            return
+
+        # If we don't currently have an active report for this user, add one
+        if author_id not in self.reports:
+            self.reports[author_id] = Report(self)
+
+        # Let the report class handle this message; forward all the messages it returns to uss
+        responses = await self.reports[author_id].handle_message(message)
+        for r in responses:
+            await message.channel.send(r)
+
+        # If the report is complete or cancelled, remove it from our map
+        if self.reports[author_id].report_complete():
+            self.reports.pop(author_id)
+
+    async def handle_channel_message(self, message):
+        # Only handle messages sent in the "group-#" channel
+        if not message.channel.name == f'group-{self.group_num}':
+            return
+
+        # Forward the message to the mod channel
+        mod_channel = self.mod_channels[message.guild.id]
+        await mod_channel.send(f'Forwarded message:\n{message.author.name}: "{message.content}"')
+        scores = self.eval_text(message.content)
+        await mod_channel.send(self.code_format(scores))
+
     
+    def eval_text(self, message):
+        ''''
+        TODO: Once you know how you want to evaluate messages in your channel, 
+        insert your code here! This will primarily be used in Milestone 3. 
+        '''
+        return message
+
+    
+    def code_format(self, text):
+        ''''
+        TODO: Once you know how you want to show that a message has been 
+        evaluated, insert your code here for formatting the string to be 
+        shown in the mod channel. 
+        '''
+        return "Evaluated: '" + text+ "'"
+
+
+client = ModBot()
+client.run(discord_token)
