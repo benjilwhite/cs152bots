@@ -34,6 +34,8 @@ class Report:
         self.reason = Reason.UNKNOWN
         self.doxing_subreason = DoxingSubReason.UNKNOWN
         self.imminent_danger = None
+        self.askToBlock = False
+        self.isBlocked = None
 
     async def handle_message(self, message):
         if message.content == self.CANCEL_KEYWORD:
@@ -68,11 +70,31 @@ class Report:
         
         if self.state == State.MESSAGE_IDENTIFIED:
             if self.reason == Reason.UNKNOWN:
-                return ["Please specify the reason for your report."]
-            elif self.reason == Reason.SPAM or self.reason == Reason.HARASSMENT or self.reason == Reason.REPORT_OTHER or self.reason == Reason.OTHER:
+                if message.content.lower() == "spam":
+                    self.reason = Reason.SPAM
+                elif message.content.lower() == "harassment":
+                    self.reason = Reason.HARASSMENT
+                elif message.content.lower() == "doxing":
+                    self.reason = Reason.DOXING
+                elif message.content.lower() == "reporting on behalf of someone else":
+                    self.reason = Reason.REPORT_OTHER
+                elif message.content.lower() == "other":
+                    self.reason = Reason.OTHER
+                else:
+                    return ["Please specify the reason for your report."]
+
+            if self.reason == Reason.SPAM or self.reason == Reason.HARASSMENT or self.reason == Reason.REPORT_OTHER or self.reason == Reason.OTHER:
                 self.state = State.REPORT_COMPLETE
+                self.askToBlock = True
                 return ["Thank you for the report. Our moderation team will take appropriate action. Would you like to block the user? You can say `yes` or `no`."]
-            elif self.reason == Reason.DOXING:
+            elif self.state == State.MESSAGE_IDENTIFIED and self.reason == Reason.DOXING and self.doxing_subreason == DoxingSubReason.UNKNOWN:
+                if message.content.lower() == "sensitive information about me":
+                    self.doxing_subreason = DoxingSubReason.SENSITIVE_INFO
+                elif message.content.lower() == "threatening to leak my information":
+                    self.doxing_subreason = DoxingSubReason.THREATENING_LEAK
+                elif message.content.lower() == "exposing my information":
+                    self.doxing_subreason = DoxingSubReason.EXPOSING_INFO
+
                 if self.doxing_subreason == DoxingSubReason.UNKNOWN:
                     return ["Please specify. You can say `sensitive information about me`, `threatening to leak my information`, or `exposing my information`."]
                 elif self.doxing_subreason != DoxingSubReason.UNKNOWN:
@@ -80,37 +102,29 @@ class Report:
                         return ["Does the information present an imminent physical danger to you? You can say `yes` or `no`."]
                     else:
                         self.state = State.REPORT_COMPLETE
+                        self.askToBlock = True
                         if self.imminent_danger:
                             return ["Your report has been received. Our moderation team will investigate the situation and resolve the situation as soon as possible. In the meantime, would you like to block the user? You can say `yes` or `no`."]
                         else:
                             return ["Thank you for the report. Our moderation team will take appropriate action. Would you like to block the user? You can say `yes` or `no`."]
-
-        if self.state == State.MESSAGE_IDENTIFIED and self.reason == Reason.UNKNOWN:
-            if message.content.lower() == "spam":
-                self.reason = Reason.SPAM
-            elif message.content.lower() == "harassment":
-                self.reason = Reason.HARASSMENT
-            elif message.content.lower() == "doxing":
-                self.reason = Reason.DOXING
-            elif message.content.lower() == "reporting on behalf of someone else":
-                self.reason = Reason.REPORT_OTHER
-            elif message.content.lower() == "other":
-                self.reason = Reason.OTHER
-
-        if self.state == State.MESSAGE_IDENTIFIED and self.reason == Reason.DOXING and self.doxing_subreason == DoxingSubReason.UNKNOWN:
-            if message.content.lower() == "sensitive information about me":
-                self.doxing_subreason = DoxingSubReason.SENSITIVE_INFO
-                return ["We will remind the user of our doxing policy. Your report has been received. Our moderation team will take appropriate action. Would you like to block the user? You can say `yes` or `no`."]
-            elif message.content.lower() == "threatening to leak my information":
-                self.doxing_subreason = DoxingSubReason.THREATENING_LEAK
-            elif message.content.lower() == "exposing my information":
-                self.doxing_subreason = DoxingSubReason.EXPOSING_INFO
 
         if self.state == State.MESSAGE_IDENTIFIED and self.reason == Reason.DOXING and self.doxing_subreason != DoxingSubReason.UNKNOWN and self.imminent_danger == None:
             if message.content.lower() == "yes":
                 self.imminent_danger = True
             elif message.content.lower() == "no":
                 self.imminent_danger = False
+            self.askToBlock = True
+            return ["We will remind the user of our doxing policy. Your report has been received. Our moderation team will take appropriate action. Would you like to block the user? You can say `yes` or `no`."]
+        
+        if self.askToBlock == True:
+            if message.content.lower() == "yes":
+                self.isBlocked = True
+                self.askToBlock = False
+                return["User blocked. Thank you for your report."]
+            elif message.content.lower() == "no":
+                self.isBlocked = False
+                self.askToBlock = False
+                return["User not blocked. Thank you for your report."]
 
     def report_complete(self):
         return self.state == State.REPORT_COMPLETE
