@@ -36,6 +36,7 @@ class Report:
         self.imminent_danger = None
         self.askToBlock = False
         self.isBlocked = None
+        self.userID = None
 
     async def handle_message(self, message):
         if message.content == self.CANCEL_KEYWORD:
@@ -65,6 +66,7 @@ class Report:
             except discord.errors.NotFound:
                 return ["It seems this message was deleted or never existed. Please try again or say `cancel` to cancel."]
             self.state = State.MESSAGE_IDENTIFIED
+            self.userID = message.author.id
             return ["I found this message:", "```" + message.author.name + ": " + message.content + "```", \
                     "What is your reason for reporting? You can say `spam`, `harassment`, `doxing`, `reporting on behalf of someone else`, or `other`."]
         
