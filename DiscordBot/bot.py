@@ -7,6 +7,7 @@ import logging
 import re
 import requests
 from report import Report
+from moderator import Moderator
 import pdb
 
 # Set up logging to the console
@@ -33,13 +34,18 @@ class ModBot(discord.Client):
         super().__init__(command_prefix='.', intents=intents)
         self.group_num = None
         self.mod_channels = {} # Map from guild to the mod channel id for that guild
+        self.moderator = Moderator()
         self.reports = {} # Map from user IDs to the state of their report
+        self.last_report = None
+        self.channel = None
 
     async def on_ready(self):
         print(f'{self.user.name} has connected to Discord! It is these guilds:')
         for guild in self.guilds:
             print(f' - {guild.name}')
         print('Press Ctrl-C to quit.')
+        
+        
 
         # Parse the group number out of the bot's name
         match = re.search('[gG]roup (\d+) [bB]ot', self.user.name)
@@ -51,6 +57,9 @@ class ModBot(discord.Client):
         # Find the mod channel in each guild that this bot should report to
         for guild in self.guilds:
             for channel in guild.text_channels:
+                if channel.name ==f'group-{self.group_num}':
+                    # print('guild id', guild.id)
+                    self.channel = channel
                 if channel.name == f'group-{self.group_num}-mod':
                     self.mod_channels[guild.id] = channel
         
@@ -65,49 +74,80 @@ class ModBot(discord.Client):
             return
 
         # Check if this message was sent in a server ("guild") or if it's a DM
-        if message.guild:
-            await self.handle_channel_message(message)
-        else:
-            await self.handle_dm(message)
+        # if message.guild:
+        #     await self.handle_channel_message(message)
+        # else:
+        #     await self.handle_dm(message)
+        await self.handle_dm(message)
 
     async def handle_dm(self, message):
         # Handle a help message
-        if message.content == Report.HELP_KEYWORD:
-            reply =  "Use the `report` command to begin the reporting process.\n"
-            reply += "Use the `cancel` command to cancel the report process.\n"
-            await message.channel.send(reply)
-            return
+        mod_channel= self.mod_channels[self.guilds[0].id]
+        if not message.guild:
+            if message.content == Report.HELP_KEYWORD:
+                reply =  "Use the `report` command to begin the reporting process.\n"
+                reply += "Use the `cancel` command to cancel the report process.\n"
+                await message.channel.send(reply)
+                return
 
-        author_id = message.author.id
-        responses = []
+            author_id = message.author.id
+            responses = []
 
-        # Only respond to messages if they're part of a reporting flow
-        if author_id not in self.reports and not message.content.startswith(Report.START_KEYWORD):
-            return
+            # Only respond to messages if they're part of a reporting flow
+            if author_id not in self.reports and not message.content.startswith(Report.START_KEYWORD):
+                return
 
-        # If we don't currently have an active report for this user, add one
-        if author_id not in self.reports:
-            self.reports[author_id] = Report(self)
+            # If we don't currently have an active report for this user, add one
+            if author_id not in self.reports:
+                self.reports[author_id] = Report(self)
 
-        # Let the report class handle this message; forward all the messages it returns to uss
-        responses = await self.reports[author_id].handle_message(message)
-        for r in responses:
-            await message.channel.send(r)
+            # Let the report class handle this message; forward all the messages it returns to uss
+            responses = await self.reports[author_id].handle_message(message, mod_channel)
+            for r in responses:
+                await message.channel.send(r)
+            if self.reports[author_id].report_complete():
+                self.last_report = self.reports[author_id]
+                self.last_author_id = author_id
 
         # If the report is complete or cancelled, remove it from our map
-        if self.reports[author_id].report_complete():
-            self.reports.pop(author_id)
+        if self.last_report:
+            print('report flow is complete')
+            # if author_id is not None:
+            #     self.last_report = self.reports[author_id]
+            # print(message.content[:6])
+            # if message.channel.id == mod_channel.id and message.content[:6] == Moderator.HANDLE_KEYWORD:
+            if self.last_report.need_handle():
+                print('handling the report')
+                reported_user =await self.fetch_user(int(self.last_report.report_message.author.id))
+                print('rpoert id', self.last_report.reported_userID)
+                print('user id', self.last_report.userID)
+                print('reported user', reported_user)
+                user = await self.fetch_user(int(self.last_report.userID))
+                res = await self.moderator.handle_report(report = self.last_report, message = message, user = user, reported_user = reported_user, channel= self.channel)
+                if res is not None:
+                    for r in res:
+                        # await message.channel.send(r)
+                        # mod_response = "Doxing is not detected or reported, please call the other moderator team to take care!"
+                        await mod_channel.send(r)
+                if await self.moderator.report_complete():
+                    # self.handle = False
+                    
+                    await self.moderator.reset()
+                    self.last_report = None
+                    self.reports.pop(self.last_author_id)
+                    self.last_author_id = None
+                # self.reports.pop(author_id)
 
-    async def handle_channel_message(self, message):
-        # Only handle messages sent in the "group-#" channel
-        if not message.channel.name == f'group-{self.group_num}':
-            return
+    # async def handle_channel_message(self, message):
+    #     # Only handle messages sent in the "group-#" channel
+    #     if not message.channel.name == f'group-{self.group_num}':
+    #         return
 
-        # Forward the message to the mod channel
-        mod_channel = self.mod_channels[message.guild.id]
-        await mod_channel.send(f'Forwarded message:\n{message.author.name}: "{message.content}"')
-        scores = self.eval_text(message.content)
-        await mod_channel.send(self.code_format(scores))
+    #     # Forward the message to the mod channel
+    #     mod_channel = self.mod_channels[message.guild.id]
+    #     await mod_channel.send(f'Forwarded message:\n{message.author.name}: "{message.content}"')
+    #     scores = self.eval_text(message.content)
+    #     await mod_channel.send(self.code_format(scores))
 
     
     def eval_text(self, message):
