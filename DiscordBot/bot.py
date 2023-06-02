@@ -9,6 +9,8 @@ import requests
 from report import Report
 from moderator import Moderator
 import pdb
+import openai
+from googleapiclient import discovery
 
 # Set up logging to the console
 logger = logging.getLogger('discord')
@@ -25,6 +27,11 @@ with open(token_path) as f:
     # If you get an error here, it means your token is formatted incorrectly. Did you put it in quotes?
     tokens = json.load(f)
     discord_token = tokens['discord']
+
+    # Setup OpenAI keys
+    openai.organization = tokens['openai-org']
+    openai.api_key = tokens['openai-api-key']
+    
 
 
 class ModBot(discord.Client):
@@ -74,11 +81,11 @@ class ModBot(discord.Client):
             return
 
         # Check if this message was sent in a server ("guild") or if it's a DM
-        # if message.guild:
-        #     await self.handle_channel_message(message)
-        # else:
-        #     await self.handle_dm(message)
-        await self.handle_dm(message)
+        if message.guild:
+            await self.handle_channel_message(message)
+        else:
+             await self.handle_dm(message)
+        #await self.handle_dm(message)
 
     async def handle_dm(self, message):
         # Handle a help message
@@ -138,24 +145,102 @@ class ModBot(discord.Client):
                     self.last_author_id = None
                 # self.reports.pop(author_id)
 
-    # async def handle_channel_message(self, message):
-    #     # Only handle messages sent in the "group-#" channel
-    #     if not message.channel.name == f'group-{self.group_num}':
-    #         return
+    async def handle_channel_message(self, message):
+        # Only handle messages sent in the "group-#" channel
+        if not message.channel.name == f'group-{self.group_num}':
+            return
 
-    #     # Forward the message to the mod channel
-    #     mod_channel = self.mod_channels[message.guild.id]
-    #     await mod_channel.send(f'Forwarded message:\n{message.author.name}: "{message.content}"')
-    #     scores = self.eval_text(message.content)
-    #     await mod_channel.send(self.code_format(scores))
+
+        # Evaluate using GPT and Perspective API
+        gpt_model = "gpt-3.5-turbo"
+        dox = self.eval_dox(message.content, gpt_model)
+        if dox != "Doxing":
+            return
+        threat = self.eval_threat(message.content)
+
+        # Forward the message to the mod channel
+        mod_channel = self.mod_channels[message.guild.id]
+        await mod_channel.send(f'Evaluated message:\n{message.author.name}: "{message.content}"')
+
+        # Generate and send response message
+        response_message = gpt_model + " evaluated the message as **" + dox + "**\n"
+        response_message = response_message + "Probability of message being threatening: **" + str(threat) + "**\n"
+        await mod_channel.send(response_message)
 
     
-    def eval_text(self, message):
-        ''''
-        TODO: Once you know how you want to evaluate messages in your channel, 
-        insert your code here! This will primarily be used in Milestone 3. 
-        '''
-        return message
+    def eval_dox(self, message, model):
+
+        response = openai.ChatCompletion.create(
+        model=model,
+        messages=[
+        {"role": "system", "content": "You are a content moderation system. Classify each input as either Doxing or Not Doxing"},
+        {"role": "user", "content": "I know where you live and I'm going to kill you"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "I'm going to kill you"},
+        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "user", "content": "﻿I know where you live"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "I know where you work"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "Your address is mine"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "I'm excited for the party tonight! Can I have your address?"},
+        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "user", "content": "Where do you live?"},
+        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "user", "content": "I know you're at 459 Lagunita Drive."},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "I know where you live and I'm going to kill you"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "Your ip address is 102.14.14.234"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "I know your ip address"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "What is your ip address?"},
+        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "user", "content": "I know that your name is John Doe"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "Hey"},
+        {"role": "assistant", "content": " do you still live in this area? I'm looking to catch up sometime"},
+        {"role": "user", "content": "Hey I'm doing some research on you and am gonna post a bunch of your personal info. Starting with location"},
+        {"role": "assistant", "content": " place of work"},
+        {"role": "user", "content": "Your social security numer is 123-45-6789"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "I know your social security number. Give me money"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "I know you study at stanford"},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "Where do you go to school?"},
+        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "user", "content": "I know your name. You're dead to me."},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": "What is your social security number?"},
+        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "user", "content": "I am going to kill you"},
+        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "user", "content": "I know who you are. Send me $10000 or else I'll post your social security number publicly."},
+        {"role": "assistant", "content": "Doxing"},
+        {"role": "user", "content": message}
+        ]
+        )
+
+        return response['choices'][0]['message']['content']
+
+    def eval_threat(self, message):
+        client = discovery.build(
+            "commentanalyzer",
+            "v1alpha1",
+            developerKey=tokens['perspective-key'],
+            discoveryServiceUrl="https://commentanalyzer.googleapis.com/$discovery/rest?version=v1alpha1",
+            static_discovery=False,
+        )
+
+        analyze_request = {
+            'comment': { 'text': message },
+            'requestedAttributes': {'THREAT': {}}
+        }
+        response = client.comments().analyze(body=analyze_request).execute()
+        return response['attributeScores']['THREAT']['summaryScore']['value']
 
     
     def code_format(self, text):
@@ -164,7 +249,7 @@ class ModBot(discord.Client):
         evaluated, insert your code here for formatting the string to be 
         shown in the mod channel. 
         '''
-        return "Evaluated: '" + text+ "'"
+        return "GPT evaluated message as: '" + text+ "'"
 
 
 client = ModBot()
