@@ -10,6 +10,7 @@ from report import Report
 from moderator import Moderator
 import pdb
 import openai
+import boto3
 from googleapiclient import discovery
 
 # Set up logging to the console
@@ -152,19 +153,27 @@ class ModBot(discord.Client):
 
 
         # Evaluate using GPT and Perspective API
-        gpt_model = "gpt-3.5-turbo"
-        dox = self.eval_dox(message.content, gpt_model)
-        if dox != "Doxing":
+        #gpt_model = "gpt-3.5-turbo"
+        #dox = self.eval_dox(message.content, gpt_model)
+        #threat = self.eval_threat(message.content)
+        pii_response = self.eval_pii(message.content)
+
+        # If there's no PII in the message, do nothing
+        if len(pii_response) == 0:
             return
-        threat = self.eval_threat(message.content)
 
         # Forward the message to the mod channel
         mod_channel = self.mod_channels[message.guild.id]
         await mod_channel.send(f'Evaluated message:\n{message.author.name}: "{message.content}"')
 
+        response_message = "Detected The following types of sensitive personal information with probabilities:\n```"
+        for i in pii_response:
+            response_message = response_message + i['Name'] + ": " + str(i['Score']) + "\n"
+        response_message += "```"
+
         # Generate and send response message
-        response_message = gpt_model + " evaluated the message as **" + dox + "**\n"
-        response_message = response_message + "Probability of message being threatening: **" + str(threat) + "**\n"
+        #response_message = "Does the message contain personal information? **" + dox + "**\n"
+        #response_message = response_message + "Probability of message being threatening: **" + str(threat) + "**\n"
         await mod_channel.send(response_message)
 
     
@@ -173,53 +182,47 @@ class ModBot(discord.Client):
         response = openai.ChatCompletion.create(
         model=model,
         messages=[
-        {"role": "system", "content": "You are a content moderation system. Classify each input as either Doxing or Not Doxing"},
-        {"role": "user", "content": "I know where you live and I'm going to kill you"},
-        {"role": "assistant", "content": "Doxing"},
-        {"role": "user", "content": "I'm going to kill you"},
-        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "system", "content": "You are a content moderation system. Classify each input as either \"Yes\" or \"No\", depending on whether it contains or solicits sensitive personal information"},
         {"role": "user", "content": "﻿I know where you live"},
-        {"role": "assistant", "content": "Doxing"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": "I know where you work"},
-        {"role": "assistant", "content": "Doxing"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": "Your address is mine"},
-        {"role": "assistant", "content": "Doxing"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": "I'm excited for the party tonight! Can I have your address?"},
-        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": "Where do you live?"},
-        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": "I know you're at 459 Lagunita Drive."},
-        {"role": "assistant", "content": "Doxing"},
+        {"role": "assistant", "content": "Yes"},
         {"role": "user", "content": "I know where you live and I'm going to kill you"},
-        {"role": "assistant", "content": "Doxing"},
-        {"role": "user", "content": "Your ip address is 102.14.14.234"},
-        {"role": "assistant", "content": "Doxing"},
+        {"role": "assistant", "content": "Yes"},
+        {"role": "user", "content": "Your ip address is 0.0.0.0"},
+        {"role": "assistant", "content": "Yes"},
         {"role": "user", "content": "I know your ip address"},
-        {"role": "assistant", "content": "Doxing"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": "What is your ip address?"},
-        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "assistant", "content": "Yes"},
         {"role": "user", "content": "I know that your name is John Doe"},
-        {"role": "assistant", "content": "Doxing"},
-        {"role": "user", "content": "Hey"},
-        {"role": "assistant", "content": " do you still live in this area? I'm looking to catch up sometime"},
-        {"role": "user", "content": "Hey I'm doing some research on you and am gonna post a bunch of your personal info. Starting with location"},
-        {"role": "assistant", "content": " place of work"},
+        {"role": "assistant", "content": "Yes"},
+        {"role": "user", "content": "Hey, do you still live in this area? I'm looking to catch up sometime"},
+        {"role": "assistant", "content": "Yes"},
+        {"role": "user", "content": "Hey I'm doing some research on you and am gonna post a bunch of your personal info. Starting with location, place of work, parents home, sibling address, etc."},
+        {"role": "assistant", "content": "Yes"},
         {"role": "user", "content": "Your social security numer is 123-45-6789"},
-        {"role": "assistant", "content": "Doxing"},
-        {"role": "user", "content": "I know your social security number. Give me money"},
-        {"role": "assistant", "content": "Doxing"},
-        {"role": "user", "content": "I know you study at stanford"},
-        {"role": "assistant", "content": "Doxing"},
-        {"role": "user", "content": "Where do you go to school?"},
-        {"role": "assistant", "content": "Not Doxing"},
-        {"role": "user", "content": "I know your name. You're dead to me."},
-        {"role": "assistant", "content": "Doxing"},
+        {"role": "assistant", "content": "Yes"},
+        {"role": "user", "content": "You work at wendy's"},
+        {"role": "assistant", "content": "Yes"},
+        {"role": "user", "content": "Your real name is Jason"},
+        {"role": "assistant", "content": "Yes"},
+        {"role": "user", "content": "My name is Steve"},
+        {"role": "assistant", "content": "No"},
+        {"role": "user", "content": "Where do you work?"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": "What is your social security number?"},
-        {"role": "assistant", "content": "Not Doxing"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": "I am going to kill you"},
-        {"role": "assistant", "content": "Not Doxing"},
-        {"role": "user", "content": "I know who you are. Send me $10000 or else I'll post your social security number publicly."},
-        {"role": "assistant", "content": "Doxing"},
+        {"role": "assistant", "content": "No"},
         {"role": "user", "content": message}
         ]
         )
@@ -242,6 +245,12 @@ class ModBot(discord.Client):
         response = client.comments().analyze(body=analyze_request).execute()
         return response['attributeScores']['THREAT']['summaryScore']['value']
 
+    def eval_pii(self, message):
+        aws_comprehend = boto3.client('comprehend')
+
+        # Detect PII components in the message
+        response = aws_comprehend.contains_pii_entities(Text = message, LanguageCode = 'en')
+        return response['Labels']
     
     def code_format(self, text):
         ''''
