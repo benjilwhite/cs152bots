@@ -11,7 +11,6 @@ from moderator import Moderator
 import pdb
 import openai
 import boto3
-from googleapiclient import discovery
 
 # Set up logging to the console
 logger = logging.getLogger('discord')
@@ -151,30 +150,30 @@ class ModBot(discord.Client):
         if not message.channel.name == f'group-{self.group_num}':
             return
 
+        mod_channel = self.mod_channels[message.guild.id]
 
         # Evaluate using GPT and Perspective API
-        #gpt_model = "gpt-3.5-turbo"
-        #dox = self.eval_dox(message.content, gpt_model)
-        #threat = self.eval_threat(message.content)
+        gpt_model = "gpt-3.5-turbo"
+        dox = self.eval_dox(message.content, gpt_model)
         pii_response = self.eval_pii(message.content)
 
-        # If there's no PII in the message, do nothing
-        if len(pii_response) == 0:
-            return
 
-        # Forward the message to the mod channel
-        mod_channel = self.mod_channels[message.guild.id]
-        await mod_channel.send(f'Evaluated message:\n{message.author.name}: "{message.content}"')
+        if dox == "Threatening" or len(pii_response) > 0:
 
-        response_message = "Detected The following types of sensitive personal information with probabilities:\n```"
-        for i in pii_response:
-            response_message = response_message + i['Name'] + ": " + str(i['Score']) + "\n"
-        response_message += "```"
+            # Forward the message to the mod channel
+            response_message = "**Automatically evaluated the following message:**\n```" + str(message.author.name) + ": \"" + str(message.content) + "\"```"
 
-        # Generate and send response message
-        #response_message = "Does the message contain personal information? **" + dox + "**\n"
-        #response_message = response_message + "Probability of message being threatening: **" + str(threat) + "**\n"
-        await mod_channel.send(response_message)
+            if len(pii_response) > 0:
+                response_message += "Detected the following types of sensitive personal information with probabilities:\n```"
+                for i in pii_response:
+                    response_message = response_message + i['Name'] + ": " + str(i['Score']) + "\n"
+                response_message += "```"
+
+            if dox == "Threatening":
+                response_message = response_message + gpt_model + " indicates that the message potentially threatens a doxing attack\n"
+
+            mod_channel = self.mod_channels[message.guild.id]
+            await mod_channel.send(response_message)
 
     
     def eval_dox(self, message, model):
@@ -182,68 +181,54 @@ class ModBot(discord.Client):
         response = openai.ChatCompletion.create(
         model=model,
         messages=[
-        {"role": "system", "content": "You are a content moderation system. Classify each input as either \"Yes\" or \"No\", depending on whether it contains or solicits sensitive personal information"},
-        {"role": "user", "content": "﻿I know where you live"},
-        {"role": "assistant", "content": "No"},
+        {"role": "system", "content": "You are a content moderation system designed to detect threats of doxing. Classify each input as either Threatening or Not Threatening."},
+        {"role": "user", "content": "I know where you live"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "I know where you work"},
-        {"role": "assistant", "content": "No"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "Your address is mine"},
-        {"role": "assistant", "content": "No"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "I'm excited for the party tonight! Can I have your address?"},
-        {"role": "assistant", "content": "No"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "Where do you live?"},
-        {"role": "assistant", "content": "No"},
-        {"role": "user", "content": "I know you're at 459 Lagunita Drive."},
-        {"role": "assistant", "content": "Yes"},
+        {"role": "assistant", "content": "Not Threatening"},
+        {"role": "user", "content": "I know you're at College University"},
+        {"role": "assistant", "content": "Threatening"},
         {"role": "user", "content": "I know where you live and I'm going to kill you"},
-        {"role": "assistant", "content": "Yes"},
-        {"role": "user", "content": "Your ip address is 0.0.0.0"},
-        {"role": "assistant", "content": "Yes"},
+        {"role": "assistant", "content": "Threatening"},
+        {"role": "user", "content": "Your ip address is 1.1.1.1"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "I know your ip address"},
-        {"role": "assistant", "content": "No"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "What is your ip address?"},
-        {"role": "assistant", "content": "Yes"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "I know that your name is John Doe"},
-        {"role": "assistant", "content": "Yes"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "Hey, do you still live in this area? I'm looking to catch up sometime"},
-        {"role": "assistant", "content": "Yes"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "Hey I'm doing some research on you and am gonna post a bunch of your personal info. Starting with location, place of work, parents home, sibling address, etc."},
-        {"role": "assistant", "content": "Yes"},
+        {"role": "assistant", "content": "Threatening"},
         {"role": "user", "content": "Your social security numer is 123-45-6789"},
-        {"role": "assistant", "content": "Yes"},
-        {"role": "user", "content": "You work at wendy's"},
-        {"role": "assistant", "content": "Yes"},
-        {"role": "user", "content": "Your real name is Jason"},
-        {"role": "assistant", "content": "Yes"},
-        {"role": "user", "content": "My name is Steve"},
-        {"role": "assistant", "content": "No"},
-        {"role": "user", "content": "Where do you work?"},
-        {"role": "assistant", "content": "No"},
+        {"role": "assistant", "content": "Not Threatening"},
+        {"role": "user", "content": "I know your social security number. Give me money"},
+        {"role": "assistant", "content": "Threatening"},
+        {"role": "user", "content": "I know you study at stanford"},
+        {"role": "assistant", "content": "Threatening"},
+        {"role": "user", "content": "Where do you go to school?"},
+        {"role": "assistant", "content": "Not Threatening"},
+        {"role": "user", "content": "I know your name. You're dead to me."},
+        {"role": "assistant", "content": "Threatening"},
         {"role": "user", "content": "What is your social security number?"},
-        {"role": "assistant", "content": "No"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": "I am going to kill you"},
-        {"role": "assistant", "content": "No"},
+        {"role": "assistant", "content": "Threatening"},
+        {"role": "user", "content": "I know who you are. Send me $10000 or else I'll post your social security number publicly."},
+        {"role": "assistant", "content": "Threatening"},
         {"role": "user", "content": message}
         ]
         )
 
         return response['choices'][0]['message']['content']
-
-    def eval_threat(self, message):
-        client = discovery.build(
-            "commentanalyzer",
-            "v1alpha1",
-            developerKey=tokens['perspective-key'],
-            discoveryServiceUrl="https://commentanalyzer.googleapis.com/$discovery/rest?version=v1alpha1",
-            static_discovery=False,
-        )
-
-        analyze_request = {
-            'comment': { 'text': message },
-            'requestedAttributes': {'THREAT': {}}
-        }
-        response = client.comments().analyze(body=analyze_request).execute()
-        return response['attributeScores']['THREAT']['summaryScore']['value']
 
     def eval_pii(self, message):
         aws_comprehend = boto3.client('comprehend')
