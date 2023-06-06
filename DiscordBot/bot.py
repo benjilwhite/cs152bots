@@ -154,6 +154,7 @@ class ModBot(discord.Client):
 
         # Evaluate using GPT and Perspective API
         gpt_model = "gpt-3.5-turbo"
+        # gpt_model = "gpt-4"
         dox = self.eval_dox(message.content, gpt_model)
         pii_response = self.eval_pii(message.content)
 
@@ -210,7 +211,7 @@ class ModBot(discord.Client):
         {"role": "assistant", "content": "Threatening"},
         {"role": "user", "content": "Your social security numer is 123-45-6789"},
         {"role": "assistant", "content": "Not Threatening"},
-        {"role": "user", "content": "I know your social security number. Give me money"},
+        {"role": "user", "content": "I know your social security number. Give me money or else I will leak this information to the world."},
         {"role": "assistant", "content": "Threatening"},
         {"role": "user", "content": "I know you study at stanford"},
         {"role": "assistant", "content": "Threatening"},
@@ -224,6 +225,8 @@ class ModBot(discord.Client):
         {"role": "assistant", "content": "Threatening"},
         {"role": "user", "content": "I know who you are. Send me $10000 or else I'll post your social security number publicly."},
         {"role": "assistant", "content": "Threatening"},
+        {"role": "user", "content": "Hey there man! Can you give me the address of the party?"},
+        {"role": "assistant", "content": "Not Threatening"},
         {"role": "user", "content": message}
         ]
         )
