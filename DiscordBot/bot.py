@@ -43,6 +43,7 @@ class ModBot(discord.Client):
         self.mod_channels = {} # Map from guild to the mod channel id for that guild
         self.moderator = Moderator()
         self.reports = {} # Map from user IDs to the state of their report
+        self.report_type = None
         self.last_report = None
         self.bot_report_message = None
         self.channel = None
@@ -115,15 +116,13 @@ class ModBot(discord.Client):
                 await message.channel.send(r)
             if self.reports[author_id].report_complete():
                 self.last_report = self.reports[author_id]
+                self.report_type = "manual"
                 self.last_author_id = author_id
 
-        # If the report is complete or cancelled, remove it from our map
+        # Send the first message to start the moderator workflow
         if self.last_report:
             print('report flow is complete')
-            # if author_id is not None:
-            #     self.last_report = self.reports[author_id]
-            # print(message.content[:6])
-            # if message.channel.id == mod_channel.id and message.content[:6] == Moderator.HANDLE_KEYWORD:
+   
             if self.last_report.need_handle():
                 print('handling the report')
                 reported_user =await self.fetch_user(int(self.last_report.report_message.author.id))
@@ -146,7 +145,7 @@ class ModBot(discord.Client):
                     self.last_author_id = None
                 # self.reports.pop(author_id)
 
-    # Handles automated classification
+    # Handles automated classification and the moderator handling process
     async def handle_channel_message(self, message):
 
         mod_channel = self.mod_channels[message.guild.id]
@@ -177,28 +176,56 @@ class ModBot(discord.Client):
                     response_message = response_message + gpt_model + " indicates that the message potentially threatens a doxing attack\n"
 
                 # Prompt the mod to handle the report
-                response_message += "Type *report* if you would like to take action."
+                response_message += "Type *report* to take action."
 
                 await mod_channel.send(response_message)
                 self.last_report = True
+                self.report_type = "automated"
                 self.bot_report_message = message
 
         # Handle Moderator messages in the mod channel
-        elif message.channel.name == f'group-{self.group_num}-mod' and self.last_report == True:
+        elif message.channel.name == f'group-{self.group_num}-mod' and self.last_report:
+            
+            # Handle automated reports
+            if self.report_type == "automated":
+                # Call the moderator pipeline
+                res = await self.moderator.handle_bot_report(self.bot_report_message, message, self.bot_report_message.author, self.channel)
 
-            # Call the moderator pipeline
-            res = await self.moderator.handle_bot_report(self.bot_report_message, message, self.bot_report_message.author, self.channel)
+                # if the user responds, send the message to the mod channel
+                if res is not None:
+                    for r in res:
+                        await mod_channel.send(r)
 
-            # if the user responds, send the message to the mod channel
-            if res is not None:
-                for r in res:
-                    await mod_channel.send(r)
+                if await self.moderator.report_complete():
+                    await self.moderator.reset()
+                    self.report_type = None
+                    self.last_report = None
 
-            if await self.moderator.report_complete():
-                await self.moderator.reset()
-                self.last_report = None
+            # Handle manual reports
+            elif self.report_type == "manual":
+                author_id = message.author.id
 
-    
+                if self.last_report.need_handle():
+
+                    # Gather information
+                    reported_user =await self.fetch_user(int(self.last_report.report_message.author.id))
+                    user = await self.fetch_user(int(self.last_report.userID))
+                    res = await self.moderator.handle_report(report = self.last_report, message = message, user = user, reported_user = reported_user, channel= self.channel)
+
+                    # Forward responses to mod channel
+                    if res is not None:
+                        for r in res:                
+                            await mod_channel.send(r)
+
+                    # Reset the process once the report is done
+                    if await self.moderator.report_complete():
+                        await self.moderator.reset()
+                        self.last_report = None
+                        self.report_type = None
+                        self.reports.pop(self.last_author_id)
+                        self.last_author_id = None
+
+    # GPT doxing evaluation
     def eval_dox(self, message, model):
 
         response = openai.ChatCompletion.create(
@@ -255,6 +282,7 @@ class ModBot(discord.Client):
 
         return response['choices'][0]['message']['content']
 
+    # AWS PII detection
     def eval_pii(self, message):
         aws_comprehend = boto3.client('comprehend')
 
