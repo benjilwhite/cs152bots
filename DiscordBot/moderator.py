@@ -5,9 +5,11 @@ class State(Enum):
     REPORT_START = auto()
     WAITING_REASON = auto()
     WAITING_USER = auto()
+    WAITING_DANGER = auto()
     # GOT_USER_ID = auto()
     WAITING_DOXING_TYPE = auto()
     GOT_DOXING_TYPE = auto()
+    WAITING_MOD_DELETE = auto()
     WAITING_FRAUD_TYPE = auto()
     REPORT_COMPLETE = auto()
 
@@ -23,33 +25,78 @@ class Moderator:
     def __init__(self): 
         self.state = State.REPORT_START
         self.doxing_type = None
-    
-    async def handle_report(self, report, message, user, reported_user, channel):
-        # if message.content.startswith('!report'):
-            # Extract the relevant information from the message
-        # report_info = message.content.split(' ')[1:]
-        # user_id = report_info[0]  # User ID being reported
-        # reason = report_info[1]  # Reason for the report
-        # additional_info = ' '.join(report_info[2:])  # Additional information provided
 
-        # # Handle the report based on the reason
-        # if reason == 'spam':
-        #     await self.handle_spam_report(user_id, additional_info, client)
-        # elif reason == 'harassment':
-        #     await self.handle_harassment_report(user_id, additional_info, client)
-        # elif reason == 'doxing':
-        #     await self.handle_doxing_report(user_id, additional_info, client)
-        # else:
-        #     await message.channel.send("Invalid reason for the report.")
-        # if message.content.lower().startswith('cancel'):
-        #     self.state = State.REPORT_START
-        #     self.func = None
-        #     return ["Report cancelled."]
-        # if message.content.lower().startswith('help'):
-        #     return ["This is the help message."]
+    # Special handler designed to handle reports from the bot classifer. Note that the
+    # classifer does not generate a 'report' object, so it requires a different system.
+    async def handle_bot_report(self, reported_message, message, reported_user, channel):
         print('message', message.content)
         print('state', self.state)
         
+        # Start of the bot reporting process: Look at the message and determine if it's doxing or not
+        if self.state == State.REPORT_START:
+            self.state = State.WAITING_REASON
+            return ['is the user in question being doxed? (yes, no)']
+
+        if self.state == State.WAITING_REASON:
+            response = message.content.lower()
+            if response == 'yes':
+                self.state = State.WAITING_DANGER
+                return ['Is the user in some sort of physical danger?']
+            elif response == 'no':
+                self.state = State.REPORT_COMPLETE
+                return ['No doxing here, move on']
+
+        # Check to see if the message puts someone in danger, since the classifier does not look for this
+        if self.state == State.WAITING_DANGER:
+            response = message.content.lower()
+            if response == 'yes':
+                self.state = State.REPORT_COMPLETE
+                return ['The user has imminent danger so we will report to other moderator teams to verify the claim and report to authorities!']
+            else:
+                self.state = State.WAITING_DOXING_TYPE
+                return ["What type of doxing is this? (deanonymization doxing, targeting doxing, delegitimization doxing)"]
+
+        # Look at the three types of doxing to determine the best course of action
+        # NOTE: do not need to look for fraudulent reports, as the moderator verifies that at the beginning.
+        if self.state == State.WAITING_DOXING_TYPE:
+
+            doxing_type = message.content.lower()
+            if doxing_type == 'deanonymization doxing':
+                self.doxing_type = DoxingType.DEANONYMIZATION
+                self.state = State.REPORT_COMPLETE
+
+                # Delete message, ban the user
+                await reported_message.delete()
+                await reported_user.send("You have been banned from the channel for doxing!")
+                await channel.send(reported_user.name + " has been banned from the channel")
+                return ["The message has been removed and the user has been banned."]
+
+            elif doxing_type == 'targeting doxing':
+                self.doxing_type = DoxingType.TARGETING
+                self.state = State.REPORT_COMPLETE
+
+                # Delete the message, ban the user
+                await reported_message.delete()
+                await reported_user.send("You have been banned from the channel for doxing!")
+                await channel.send(reported_user.name + " has been banned from the channel")
+                return ["The message has been removed and the user has been banned."]
+
+            elif doxing_type == 'delegitimization doxing':
+                self.doxing_type = DoxingType.DELEGIITIMIZATION
+                self.state = State.REPORT_COMPLETE
+
+                # Delete the message, warn the user
+                await reported_message.delete()
+                await reported_user.send("Warning! You have been reported by other users for doxing! You will be removed if you do it again")
+                return ["The message has been removed and the user has been warned."]
+
+    
+    async def handle_report(self, report, message, user, reported_user, channel):
+
+        print('message', message.content)
+        print('state', self.state)
+        
+        # Send the Initial message to begin the reporting process.
         if self.state == State.REPORT_START:
             reply =  "Thank you for starting the report handling process. "
             reply += "handle report about this message: \n"
@@ -61,6 +108,7 @@ class Moderator:
             self.state = State.WAITING_REASON
             return [reply]
         
+        # Determine whether the report is for doxing, spam, or harassment.
         if self.state == State.WAITING_REASON:
             reason = message.content.lower()
             if self.state == State.WAITING_REASON:
@@ -74,23 +122,16 @@ class Moderator:
             else:
                 self.state = State.REPORT_START
                 return ["Invalid reason for the report."]
-            # return ["Please provide the user ID of the user being reported."]
+
+        # If the user has reported imminent danger on their behalf, escalate the report to a different team
         if self.state == State.WAITING_USER :
             if report.imminent_danger:
                 return ['The user has imminent danger so we will report to other moderator teams to verify the claim and report to authorities!']
             else:
                 return await self.func(report.report_message, report, user, reported_user, channel)
+                
         if self.state == State.WAITING_DOXING_TYPE or self.state == State.WAITING_FRAUD_TYPE or self.state==State.GOT_DOXING_TYPE:
             return await self.func(message,report, user, reported_user, channel)
-        
-        # if self.state == State.WAITING_USER_ID:
-        #     user_id = message.content
-        #     self.state = State.GOT_USER_ID
-        #     return await self.func(user_id, client, message)
-
-        # if self.state.value >= State.GOT_USER_ID.value:
-        #     return await self.func(message, client, message)
-
 
 
     async def handle_spam_report(self, message,report, user, reported_user, channel):
@@ -122,23 +163,25 @@ class Moderator:
         # Example actions:
         # await client.send_message(user_id, "You have been reported for doxing. Sharing personal information without consent is not allowed.")
         
-        # Delete doxing messages from the user
-        # await self.delete_doxing_messages(user_id, additional_info)
-        # if self.doxing_type == None and self.state == State.GOT_USER_ID:
+        # Ask the moderator to determine what type of doxing is happening
         if self.doxing_type == None and self.state == State.WAITING_USER:
             self.state = State.WAITING_DOXING_TYPE
             return ["What type of doxing is this? (deanonymization doxing, targeting doxing, delegitimization doxing)"]
+
+        # Doxing type received
         if self.state == State.WAITING_DOXING_TYPE:
             doxing_type = message.content.lower()
             if doxing_type == 'deanonymization doxing':
                 self.doxing_type = DoxingType.DEANONYMIZATION
                 self.state = State.WAITING_FRAUD_TYPE
                 return ["Is this claim fraudulent? (yes, no)"]
+
             elif doxing_type == 'targeting doxing':
                 self.doxing_type = DoxingType.TARGETING
                 print('targeting doxing is reported')
                 self.state = State.WAITING_FRAUD_TYPE
                 return ["Is this claim fraudulent? (yes, no)"]
+
             elif doxing_type == 'delegitimization doxing':
                 self.doxing_type = DoxingType.DELEGIITIMIZATION
                 # TODO: Handle doxing report for this type
@@ -147,37 +190,23 @@ class Moderator:
                 await user.send('Warning! You have been reported by other users for doxing! You will be removed if you do it again')
                 self.state = State.REPORT_COMPLETE
                 return ["The message has been removed and the user has been warned."]
-            # else:
-            #     # self.state = State.GOT_USER_ID
-            #     self.doxing_type = None
-            #     return await self.handle_doxing_report(message, user, reported_user)
-            # self.state = State.GOT_DOXING_TYPE
-            # self.state = State.WAITING_FRAUD_TYPE
-            # return ["Is this claim fraudulent? (yes, no)"]
-            # return ["Doxing Type Received!"]
-        
-        # if self.state == State.GOT_DOXING_TYPE:
-        #     self.state = State.WAITING_FRAUD_TYPE
-        #     return ["Is this claim fraudulent? (yes, no)"]
+
+        # Verify if the doxing claim is legitimate
         if self.state == State.WAITING_FRAUD_TYPE:
             fraud_type = message.content.lower()
             if fraud_type == 'yes':
                 self.state = State.REPORT_COMPLETE
-                # TODO: Handle this
-                # user = client.get_user(int(report.userID))
                 await user.send("Warning! You have sent frivlous claims!")
                 return ["The user has been warned."]
+
             elif fraud_type == 'no':
                 self.state = State.REPORT_COMPLETE
-                # TODO: Handle this
+                
+                # handle the case by banning the user and removing the message
                 await report.report_message.delete()
-                # reported_user = client.get_user(int(report.reported_userID))
                 await user.send("Your reported message has been removed and the user is banned!")
-
                 await reported_user.send('You have been banned from the channel')
                 await channel.send(report.report_message.author.name + " have been banned from the channel")
-                # user = client.get_user(int(report.userID))
-               
                 return ["Action has been taken against the offender."]
             else:
                 self.state = State.GOT_DOXING_TYPE
@@ -186,16 +215,6 @@ class Moderator:
     async def reset(self):
         self.state = State.REPORT_START
         self.doxing_type = None
-
-    # async def delete_doxing_messages(self, user_id, additional_info, client):
-    #     # Fetch the channel where the doxing messages were reported
-    #     channel = client.get_channel(additional_info)
-
-    #     if channel:
-    #         async for message in channel.history(limit=None):
-    #             if message.author.id == user_id:
-    #                 # Delete the doxing message
-    #                 await message.delete()
 
     async def report_complete(self):
         return self.state == State.REPORT_COMPLETE

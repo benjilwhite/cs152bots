@@ -44,6 +44,7 @@ class ModBot(discord.Client):
         self.moderator = Moderator()
         self.reports = {} # Map from user IDs to the state of their report
         self.last_report = None
+        self.bot_report_message = None
         self.channel = None
 
     async def on_ready(self):
@@ -145,36 +146,57 @@ class ModBot(discord.Client):
                     self.last_author_id = None
                 # self.reports.pop(author_id)
 
+    # Handles automated classification
     async def handle_channel_message(self, message):
-        # Only handle messages sent in the "group-#" channel
-        if not message.channel.name == f'group-{self.group_num}':
-            return
 
         mod_channel = self.mod_channels[message.guild.id]
 
-        # Evaluate using GPT and Perspective API
-        gpt_model = "gpt-3.5-turbo"
-        # gpt_model = "gpt-4"
-        dox = self.eval_dox(message.content, gpt_model)
-        pii_response = self.eval_pii(message.content)
+        # Only handle messages sent in the "group-#" channel
+        if message.channel.name == f'group-{self.group_num}':
 
+            # Evaluate using GPT and Amazon Comprehend
+            gpt_model = "gpt-3.5-turbo"
+            dox = self.eval_dox(message.content, gpt_model)
+            pii_response = self.eval_pii(message.content)
 
-        if dox == "Threatening" or len(pii_response) > 0:
+            # At least one of the classifiers needs to be triggered to send a bot report
+            if dox == "Threatening" or len(pii_response) > 0:
 
-            # Forward the message to the mod channel
-            response_message = "**Automatically evaluated the following message:**\n```" + str(message.author.name) + ": \"" + str(message.content) + "\"```"
+                # Forward the message to the mod channel
+                response_message = "**Automatically evaluated the following message:**\n```" + str(message.author.name) + ": \"" + str(message.content) + "\"```"
 
-            if len(pii_response) > 0:
-                response_message += "Detected the following types of sensitive personal information with probabilities:\n```"
-                for i in pii_response:
-                    response_message = response_message + i['Name'] + ": " + str(i['Score']) + "\n"
-                response_message += "```"
+                # Append PII report to the message if it was detected
+                if len(pii_response) > 0:
+                    response_message += "Detected the following types of sensitive personal information with probabilities:\n```"
+                    for i in pii_response:
+                        response_message = response_message + i['Name'] + ": " + str(i['Score']) + "\n"
+                    response_message += "```"
 
-            if dox == "Threatening":
-                response_message = response_message + gpt_model + " indicates that the message potentially threatens a doxing attack\n"
+                # Append GPT threat report if ti happened
+                if dox == "Threatening":
+                    response_message = response_message + gpt_model + " indicates that the message potentially threatens a doxing attack\n"
 
-            mod_channel = self.mod_channels[message.guild.id]
-            await mod_channel.send(response_message)
+                # Prompt the mod to handle the report
+                response_message += "Type *report* if you would like to take action."
+
+                await mod_channel.send(response_message)
+                self.last_report = True
+                self.bot_report_message = message
+
+        # Handle Moderator messages in the mod channel
+        elif message.channel.name == f'group-{self.group_num}-mod' and self.last_report == True:
+
+            # Call the moderator pipeline
+            res = await self.moderator.handle_bot_report(self.bot_report_message, message, self.bot_report_message.author, self.channel)
+
+            # if the user responds, send the message to the mod channel
+            if res is not None:
+                for r in res:
+                    await mod_channel.send(r)
+
+            if await self.moderator.report_complete():
+                await self.moderator.reset()
+                self.last_report = None
 
     
     def eval_dox(self, message, model):
